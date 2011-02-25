@@ -1,0 +1,301 @@
+<?php 
+// ;$id
+/**
+ * @file 
+ */
+
+// require file at first
+require_once drupal_get_path('module', 'custom_renren_connect').'/renren/RESTClient.class.php';
+require_once drupal_get_path('module', 'custom_renren_connect').'/renren/RenRenClient.class.php';
+require_once drupal_get_path('module', 'custom_renren_connect').'/renren_core.inc';
+require_once drupal_get_path('module', 'custom_renren_connect').'/custom_renren_connect.inc';
+
+/**
+ * Implementation hook_menu()
+ */
+function custom_renren_connect_menu() {
+  $items = array();
+  $items += array(
+    // setting page for renren connection key and secret
+    'admin/settings/renren_connect' => array(
+      'title' => t('Set your Renren Key and Secret'),
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('renren_connection_settings'),
+      'access arguments' => array('manage renren connection'),
+      'type' => MENU_NORMAL_ITEM,
+      'file' => 'renren_connect_pages.inc',
+      'weight' => 10,
+    ),
+    'admin/settings/renren_connect/settings' => array(
+      'title' => t('Renren settings'),
+      'weight' => -10,
+      'type' => MENU_DEFAULT_LOCAL_TASK,
+    ),
+    'admin/settings/renren_connect/renren_template_pattern' => array(
+      'title' => t('Renren Action template settings'),
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('renren_action_template_settings'),
+      'access arguments' => array('manage renren connection'),
+      'file' => 'renren_connect_pages.inc',
+      'type' => MENU_LOCAL_TASK,
+    ),
+  );
+  
+  $items += array(
+    
+  );
+  
+  // recall back url for receiver
+  $items += array(
+    'user/renren_receiver' => array(
+      'title' => t('Your renren profile'),
+      'page callback' => 'renren_user_login_receiver',
+      'page arguments' => array(1),
+      'access callback' => TRUE,
+      'type' => MENU_CALLBACK,
+    ),
+  );
+  
+  // Renren user logout callback
+  $items += array(
+    'user/renren_logout' => array(
+       'title' => t('Logout renren account'),
+       'page callback' => 'renren_user_logout',
+       'access callback' => true,
+       'type' => MENU_CALLBACK,
+       'file' => 'renren_core.inc',
+    ),
+  );
+  return $items;
+}
+
+/**
+ * Implementation hook_init()
+ */
+function custom_renren_connect_init() {
+  global $RR_config, $RR_client, $user;
+  $RR_config = renren_config();
+  $RR_config->APIKey = variable_get('renren_api_key', '');
+  $RR_config->SecretKey = variable_get('renren_api_secret', '');
+  try {
+    $RR_client = new RenRenClient($RR_config);
+  }
+  catch (Exception $e) {
+    $RR_client = null;
+  }
+  
+  if (empty($user->uid)) {
+    $renren_logined = renren_user_logined();
+    if (!empty($renren_logined)) {
+      $renren_user = renren_user_profile();
+      $hishanghai_uid = hishanghai_account_uid_with_renren($renren_user->uid);
+      if ($hishanghai_uid) {
+        $account = user_load($hishanghai_uid);
+        $user = $account;
+      }
+    }
+  }
+}
+
+/**
+ * Implementation hook_form_alter()
+ */
+function custom_renren_connect_form_alter(&$form, $form_state, $form_id) {
+  global $RR_client, $RR_config;
+  if (!isset($RR_client)) {
+    return;
+  }
+  if ($form_id == 'user_login' || $form_id == 'user_login_block') {
+    $items[] = renren_login_form();
+    $form['renren_signin'] = array(
+      '#value' => theme('item_list', $items),
+    );
+    
+    // user have already logined
+    if (renren_user_logined()) {      
+      $renren_user = renren_user_profile();
+      if ($renren_user) {
+         renren_account_auto_create($renren_user);
+      }
+    }
+  }
+  
+  if ($form_id == 'comment_form' && variable_get('renren_enable_comment', 0)) {
+   /** $form['renren_share'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Share on renren'),
+      '#default_value' => TRUE,
+    );**/
+  }
+  
+  if ($form_id == 'custom_pec_account_setting') {
+    $form['renren_share_comment'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('I want to share comment with renren '),
+      '#description' => t('If you checked, Our will send comment that you post to renren'),
+      '#default_value' => variable_get('renren_share_comment_user_setting_'.$form['uid']['#value'], 0),
+    );
+    $form['#submit'][] = 'renren_user_settings_handle';
+  }
+}
+
+/**
+ * Handle renren user settings
+ */
+function renren_user_settings_handle(&$form, &$form_state) {
+  variable_set('renren_share_comment_user_setting_'.$form_state['values']['uid'], $form_state['values']['renren_share_comment']);
+}
+
+/**
+ * Checkout the hishanghai_uid with renren_uid
+ */
+function renren_account_uid($hishanghai_uid = null) {
+  if (!isset($hishanghai_uid)) {
+     global $user;
+     $hishanghai_uid = $user->uid;
+  }
+  return db_result(db_query("SELECT renren_uid FROM {renren_account} WHERE hishanghai_uid = %d", array($hishanghai_uid)));
+}
+
+/**
+ * Checkout the renren_uid with hishanghai_uid
+ */
+function hishanghai_account_uid_with_renren($renren_uid = 0) {
+  if (!isset($renren_uid)) {
+    $renren_user = renren_user_profile()->uid;
+  }
+  return db_result(db_query("SELECT hishanghai_uid FROM {renren_account} WHERE renren_uid = %d", array($renren_uid)));
+}
+
+/**
+ * Add relation between hishanghai and renren
+ */
+function renren_account_insert($hishanghai_uid = '', $renren_uid = '') {
+  if (empty($hishanghai_uid) || empty($renren_uid)) {
+    return false;
+  }
+  else {
+    return db_affected_rows(db_query("INSERT INTO {renren_account} (hishanghai_uid, renren_uid) VALUES(%d, %d)", array($hishanghai_uid, $renren_uid)));
+  }
+}
+
+/**
+ * Implementation hook_user($op, &$edit, &$account, $catelog)
+ */
+function custom_renren_connect_user($op, &$edit, &$account, $catelog) {
+  if ($op == 'logout') {
+     renren_user_destory();
+  }
+  if ($op == 'view') {
+    $account->content['renren_link'] = array(
+      '#value' => theme('renren_link', $account),
+      '#title' => t('Renen'),
+    );
+  }
+}
+
+/**
+ * Implemetation hook_comment()
+ * after commented, send the comment to renren with user renren account 
+ */
+function custom_renren_connect_comment(&$a1, $op) {
+  if ($op == 'insert' || $op == 'update') {
+     global $user;
+     // if user have loged with renren account
+     if (renren_user_logined() && variable_get('renren_share_comment_user_setting_'.$user->uid, 0) != 0) {
+       // inserted a comment for renren associate user account
+       $comment_node = node_load($a1->nid); // the node that be commented
+       $allow_types = variable_get('renren_enable_types', array()); // allow post renren comment types
+       if (!empty($allow_types[$comment_node->type]) || true) {
+         renren_comment(&$a1, $op);
+       }
+     }
+  }
+}
+
+/**
+ * Implementation of hook_flag().
+ * Post flag to Renren
+ */
+function custom_renren_connect_flag($event, $flag, $content_id, $account) {
+  $allow_flags = variable_get('renren_flag_types', array());
+  if (variable_get('renren_enable_flag', 0) === 0 && !in_array($flag->name, $allow_flags)) {
+    return;
+  }
+  else {
+    $comment = array();
+    $node = db_fetch_object(db_query("SELECT nr.* FROM {node_revisions} nr WHERE nr.nid = %d", array($content_id)));
+    $comment['comment'] = drupal_substr($node->body, 0, 100);
+    $comment['subject'] = $node->title;
+    renren_comment(&$comment, $flag->name);
+  }
+}
+
+/**
+ * Get flags names and label 
+ */
+function custom_renren_connect_get_flags_name() {
+  $flags = flag_get_flags();
+  $flags_name = array();
+  foreach($flags as $key => $flag) {
+    $flags_name[$key] = $flag->title;
+  }
+  return $flags_name;
+}
+
+/**
+ * Implementation hook_theme()
+ */
+function custom_renren_connect_theme() {
+  return array(
+    'renren_link' => array(
+      'arguments' => array('user' => null),
+    ),
+  );
+}
+
+/**
+ * theme callback
+ * 'renren_link' theme callback
+ */
+function theme_renren_link($user){
+  $output = '<div class="renren_link_region renren_link renren_login">';
+  $output .= renren_login_form();
+  $output .= '</div>';
+  return $output;
+}
+
+/**
+ * Implmenetation hook_block()
+ */
+function custom_renren_connect_block($op = 'list', $delta = 0, $edit = array()) {
+  switch($op) {
+   case "list":
+      $blocks['renren_links'] = array(
+        'info' => t('List Renren user info'),
+      );
+      return $blocks;
+   break;
+   case "view":
+     if ($delta == 'renren_links') {
+        return array(
+          'subject' => t('Your Renren Login status'),
+          'content' => theme('renren_link', null),
+        );
+     }
+   break;
+  }
+}
+
+/**
+ * Because the data that be published to renren is very simple, 
+ * so we should clear all special chars, include space
+ */
+function renren_clean_data($string = '') {
+  $string = strip_tags($string);
+  $string = check_plain($string);
+  //$string = utf8_encode($string);
+  $string = str_replace(array("\r", "\r\n"), "", $string);
+  $string = trim($string);
+  return $string;
+}

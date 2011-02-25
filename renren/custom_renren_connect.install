@@ -1,0 +1,33 @@
+<?php 
+/**
+ * Implementation of hook_install().
+ */
+function custom_renren_connect_install() {
+  drupal_install_schema('custom_renren_connect');
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function custom_renren_connect_uninstall() {
+  drupal_uninstall_schema('custom_renren_connect');
+}
+
+/**
+ * Implementation of hook_schema().
+ */
+function custom_renren_connect_schema() {
+  return array(
+    'renren_account' => 
+       array(
+        'description' => '',
+           'fields' => array(
+           'renren_uid' => array('type' => 'int', 'not null' => true, 'default' => 0),
+           'hishanghai_uid' => array('type' => 'int', 'not null' => true, 'default' => 0),
+        ),
+        'primary key' => array('renren_uid'),
+        'indexes' => array(
+           'renren_connect_account' => array('renren_uid', 'hishanghai_uid')),
+       )
+     );
+}

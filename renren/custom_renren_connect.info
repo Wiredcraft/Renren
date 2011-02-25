@@ -1,0 +1,7 @@
+; $id$
+name = Renren Supporter
+description = Support a way to connect www.renren.com .
+package = Custom
+dependencies[] = flag
+dependencies[] = flag_friend
+core = 6.x
